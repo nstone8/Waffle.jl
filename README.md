@@ -1,0 +1,2 @@
+# Waffle.jl
+Photoreceptor scaffolds
