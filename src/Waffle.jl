@@ -14,11 +14,14 @@ function createconfig(filename="config.jl")
         :chamfertop => pi/6,
         :chamferbottom => pi/6,
         :cutangle => pi/6,
-        :roundstarth => 10u"µm",
         :overlap => 10u"µm",
         :dslice => 1u"µm",
         :wbumper => 200u"µm",
-        :fillet => 30u"µm"
+        :fillet => 30u"µm",
+        :wpost => 100u"µm",
+        :hbeam => 10u"µm",
+        :wbeam => 25u"µm",
+        :lbeammax => 120u"µm" 
     )
 end
 
@@ -232,6 +235,72 @@ function bumper(;kwargs...)
                                       (kwargs[:htop]-zmid2)*tan(kwargs[:cutangle]),
                                   zmid2,kwargs[:hbottom]+kwargs[:htop],bec;kwargs...)
     return SuperBlock(lbblock,midbottomblocks...,rbblock,rtblock,midtopblocks...,ltblock)
+end
+
+#get one slice of a post
+function postslice(scale,pctfillet;kwargs...)
+    #define some vertices that we can use to get the rest via rotation
+    firstverts = scale .* [[-kwargs[:wbeam]/2,kwargs[:wpost]/2],
+                           [kwargs[:wbeam]/2,kwargs[:wpost]/2]]
+    restverts = map((-pi/2):(-pi/2):(-3pi/2)) do r
+        map(firstverts) do v
+            Tessen.zrotate(v,r)
+        end
+    end
+    verts=vcat(firstverts,restverts...)
+    #calculate the maximum possible fillet
+    vlongside = verts[3] - verts[2]
+    phi = atan(/(reverse(vlongside)...)) |> abs
+    theta = pi - phi
+    rmax = scale*kwargs[:wbeam] * tan(theta/2)/2
+    Slice([polycontour(verts,rmax*pctfillet)])
+end
+
+function post(;kwargs...)
+    #get all the z slices that we will need
+    unassignedz = collect(range(0u"µm",kwargs[:hbottom]+kwargs[:htop],step=kwargs[:dslice]))
+    bottomz = filter(unassignedz) do uz
+        uz < kwargs[:hbottom]
+    end
+    filter!(unassignedz) do uz
+        !(uz in bottomz)
+    end
+    midz = filter(unassignedz) do uz
+        uz <= kwargs[:hbottom] + kwargs[:hbeam]
+    end
+
+    filter!(unassignedz) do uz
+        !(uz in midz)
+    end
+    
+    topz = unassignedz
+    #bottom will go from fully rounded at the bottom to no rounding at z=hbottom
+    bottomslices = map(bottomz) do z
+        #the amount of undercut
+        ucut = (kwargs[:hbottom]-z)*tan(kwargs[:chamferbottom])
+        #in terms of percent of wpost
+        scale = (kwargs[:wpost]-ucut)/kwargs[:wpost]
+        pctround = (kwargs[:hbottom] - z)/kwargs[:hbottom]
+        z => postslice(scale,pctround;kwargs...)
+    end
+    #midslices has no rounding so the beams will snap on easily
+    midslices = map(midz) do z
+        #the amount of undercut
+        ucut = (z-kwargs[:hbottom])*tan(kwargs[:chamfertop])
+        #in terms of percent of wpost
+        scale = (kwargs[:wpost]-ucut)/kwargs[:wpost]
+        z => postslice(scale,0;kwargs...)
+    end
+    #topslices round smoothly up to 1
+    topslices = map(topz) do z
+        #the amount of undercut
+        ucut = (z-kwargs[:hbottom])*tan(kwargs[:chamfertop])
+        #in terms of percent of wpost
+        scale = (kwargs[:wpost]-ucut)/kwargs[:wpost]
+        pctround = (z - kwargs[:hbottom] - kwargs[:hbeam]) / (kwargs[:htop] - kwargs[:hbeam])
+        z => postslice(scale,pctround;kwargs...)
+    end
+    Block(bottomslices...,midslices...,topslices...)
 end
 
 end # module Waffle
