@@ -21,7 +21,8 @@ function createconfig(filename="config.jl")
         :wpost => 100u"µm",
         :hbeam => 10u"µm",
         :wbeam => 25u"µm",
-        :lbeammax => 120u"µm" 
+        :lbeammax => 120u"µm",
+        :maxseglength => 50u"µm"
     )
 end
 
@@ -301,6 +302,127 @@ function post(;kwargs...)
         z => postslice(scale,pctround;kwargs...)
     end
     Block(bottomslices...,midslices...,topslices...)
+end
+
+#build a segmented beam with nsegs segments centered on y=0.
+#startx and stopx should be the position of the edge we are bonding to at the z coordinate
+#corresponding to the bottom of the beam (i.e. this function will build in overlap)
+#gonna go overboard and make this a struct so we can define rotation and translation
+struct Beam
+    leftsegs
+    rightsegs
+    keystone
+end
+
+function Beam(nsegs::Int,startx,stopx;kwargs...)
+    #nsegs needs to be odd
+    @assert isodd(nsegs)
+    #the first segment needs to be chamfered according to `chamfertop`, we will do the rest at
+    #cutangle
+    distperseg = (stopx - startx)/nsegs
+    lseg = distperseg + kwargs[:overlap]
+    leftsegs = map(1:((nsegs-1)/2)) do i
+        #the first segment needs to be a little longer and chamfered differently
+        segpos = startx + distperseg*((2i-1)/2)
+        seg = if i==1
+            box(lseg + (kwargs[:overlap]/2),kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+                chamfer =[-kwargs[:chamfertop] kwargs[:cutangle]
+                          kwargs[:cutangle]    kwargs[:cutangle]])            
+        else
+            box(lseg,kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+                chamfer =[-kwargs[:cutangle]   kwargs[:cutangle]
+                          kwargs[:cutangle]    kwargs[:cutangle]])            
+        end
+        #seg is currently centered at [0,0,0]. Move it into position (use preserveframe so we don't
+        #move the stage
+        seg=translate(seg,[segpos,0u"µm",kwargs[:hbottom]+kwargs[:hbeam]/2],preserveframe=true)
+        if i==1
+            #scrootch a little bit back to make the overlap right
+            seg=translate(seg,[-kwargs[:overlap]/4,0u"µm",0u"µm"],preserveframe=true)
+        end
+        return seg
+    end
+    #the center of the beam in xy plane
+    cbeam = [(startx+stopx)/2,0u"µm"]
+    #we can make the right side of the bridge by rotating leftsegs around cbeam
+    rightsegs = map(leftsegs) do ls
+        rotate(ls,pi,cbeam,preserveframe=true)
+    end
+    #the keystone is the same size as the other segments but cut differently
+    keystone = box(lseg,kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+                   chamfer =[-kwargs[:cutangle]   -kwargs[:cutangle]
+                             kwargs[:cutangle]    kwargs[:cutangle]])
+    #move it into position
+    keystone = translate(keystone,
+                         vcat(cbeam,kwargs[:hbottom]+kwargs[:hbeam]/2),
+                         preserveframe=true)
+    #return a namedtuple so we can be fancy about how we write these
+    Beam(leftsegs,rightsegs,keystone)
+end
+
+function Tessen.translate(b::Beam,args...;kwargs...)
+    Beam([translate(x,args...;kwargs...) for x in b.leftsegs],
+         [translate(x,args...;kwargs...) for x in b.rightsegs],
+         translate(b.keystone,args...;kwargs...))
+end
+
+function Tessen.rotate(b::Beam,args...;kwargs...)
+    Beam([rotate(x,args...;kwargs...) for x in b.leftsegs],
+         [rotate(x,args...;kwargs...) for x in b.rightsegs],
+         rotate(b.keystone,args...;kwargs...))
+end
+
+#build a kernel with a nx x ny array of posts with pitch of px and py in each dimension
+#lbeams and bbeams controls wheter beams should be drawn connecting to geometry to the left
+#or below the current kernel
+function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,kwargs...)
+    #calculate beam lengths
+    lbeamx = px - kwargs[:wpost]
+    lbeamy = py - kwargs[:wpost]
+    #with the optional beams to the left and bottom, the total size of the array is...
+    kernelsize = [nx*(kwargs[:wpost] + lbeamx),
+                  ny*(kwargs[:wpost] + lbeamy) + lbeamy]
+    #if we think of the upper left corner of this maximal array as (0,0) the post coordinates are...
+    topleftpostcoords = [[i*(lbeamx + kwargs[:wpost]) - kwargs[:wpost]/2,
+                          j*(lbeamy + kwargs[:wpost]) - kwargs[:wpost]/2] for
+                             i in 1:nx, j in 1:ny]
+    #however, we want the objective at the middle of this maximal array, so let's move all
+    #these points to be centered around kernelsize/2
+    postcoords = [tlpc - kernelsize/2 for tlpc in topleftpostcoords]
+    #little helper function
+    function onepost(postcenter,left,bottom)
+        thispost = translate(post(;kwargs...),postcenter,preserveframe=true)
+        #beam(nsegs::Int,startx,stopx;kwargs...)
+        #first build 'raw' beams around (0,0) and then translate them
+        rawleftbeam = Beam(nseg,-kwargs[:wpost]/2 - lbeamx,
+                           -kwargs[:wpost]/2;kwargs...)
+        #topbeam will also require rotation (beam() makes horizontal beams)
+        rawtopbeam = Beam(nseg,kwargs[:wpost]/2,kwargs[:wpost]/2 + lbeamy;kwargs...)
+        leftbeam = translate(rawleftbeam,postcenter,preserveframe=true)
+        topbeam = translate(rotate(rawtopbeam,pi/2,preserveframe=true),
+                            postcenter,preserveframe=true)
+        allbeams=[topbeam]
+        if left
+            push!(allbeams,leftbeam)
+        end
+        if bottom
+            #make the bottom beam by rotating topbeam
+            push!(allbeams,rotate(topbeam,pi,postcenter,preserveframe=true))
+        end
+        #make a namedtuple so we can arrange things nicely in the enclosing scope
+        (post=thispost,beams=allbeams)
+    end
+    needleft = [(i==1) ? lbeams : true for i in 1:nx, j in 1:ny]
+    needbottom = [(j==ny) ? bbeams : false for i in 1:nx, j in 1:ny]
+    units = map(zip(postcoords,needleft,needbottom)) do (pc,nl,nb)
+        onepost(pc,nl,nb)
+    end
+    uvec = reshape(units,:)
+    leftsegs = vcat((b.leftsegs for u in uvec for b in u.beams)...)
+    rightsegs = vcat((b.rightsegs for u in uvec for b in u.beams)...)
+    keystones = collect(b.keystone for u in uvec for b in u.beams)
+    posts = [u.post for u in uvec]
+    (posts=posts,leftsegs=leftsegs,rightsegs=rightsegs,keystones=keystones)
 end
 
 end # module Waffle
