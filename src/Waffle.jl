@@ -22,7 +22,9 @@ function createconfig(filename="config.jl")
         :hbeam => 10u"µm",
         :wbeam => 25u"µm",
         :lbeammax => 120u"µm",
-        :maxseglength => 50u"µm"
+        :maxseglength => 50u"µm",
+        :dhammockhatch => 1u"µm",
+        :dhatch => 300u"nm"
     )
 end
 
@@ -372,10 +374,69 @@ function Tessen.rotate(b::Beam,args...;kwargs...)
          rotate(b.keystone,args...;kwargs...))
 end
 
+#draw a hammock, it will be centered on (0,0) if topflat and bottomflat are both false
+#those arguments will add corners so it mates flush with a bumper
+function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
+    #====
+    #starting in the top right and going ccw, the coordinates of the enclosing rectangle is:
+    xmag = (lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2
+    ymag = (lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2
+    vrect = map([[1,1],
+                 [-1,1],
+                 [-1,-1],
+                 [1,-1]]) do c
+                     [xmag,ymag] .* c
+                 end
+    ===#
+    #the coordinates of the vertices which make up the top right cut off corner are
+    firstverts = [[lbeamx/2,(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2],
+                  [(lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2,lbeamy/2]]
+    #get all the vertices by mirroring
+    cornerfactors=[[1,1],[1,-1],[-1,-1],[-1,1]]
+    invertverts=[false,true,false,true]
+    allverts = map(zip(cornerfactors,invertverts)) do (cf,iv)
+        newverts = [cf.*v for v in firstverts]
+        iv ? reverse(newverts) : newverts
+    end
+    itoflat=[]
+    if topflat
+        #flatten out the top two corners
+        push!(itoflat,1,4)
+    end
+    if bottomflat
+        push!(itoflat,2,3)
+    end
+    for i in itoflat
+        oldverts = allverts[i]
+        absmat = abs.(hcat(oldverts...))
+        #take the maximum coordinate in x, and the minimum in y
+        xmag=maximum(absmat[1,:])
+        ymag=minimum(absmat[2,:])
+        #get the right sign
+        allverts[i] = [[sign(oldverts[1][1])*xmag,sign(oldverts[1][2])*ymag]]
+    end
+    #flatten to a vector of vectors
+    flatverts = vcat(allverts...)
+    #scale coordinates to give the correct overlap on the beams
+    xscale = (kwargs[:overlap]+(lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2)/
+        ((lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2)
+    yscale = (kwargs[:overlap]+(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2)/
+        ((lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2)
+    scaledverts = map(flatverts) do fv
+        fv .* [xscale,yscale]
+    end
+    outline = Slice([polycontour(scaledverts)])
+    hatchedslices = map([pi/4,3pi/4]) do hd
+        (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
+            hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
+    end
+    Block(hatchedslices...)
+end
+
 #build a kernel with a nx x ny array of posts with pitch of px and py in each dimension
 #lbeams and bbeams controls wheter beams should be drawn connecting to geometry to the left
 #or below the current kernel
-function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,kwargs...)
+function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,toprow=false,kwargs...)
     #calculate beam lengths
     lbeamx = px - kwargs[:wpost]
     lbeamy = py - kwargs[:wpost]
@@ -383,14 +444,15 @@ function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,kwargs...)
     kernelsize = [nx*(kwargs[:wpost] + lbeamx),
                   ny*(kwargs[:wpost] + lbeamy) + lbeamy]
     #if we think of the upper left corner of this maximal array as (0,0) the post coordinates are...
+    #increasing y is up/north
     topleftpostcoords = [[i*(lbeamx + kwargs[:wpost]) - kwargs[:wpost]/2,
-                          j*(lbeamy + kwargs[:wpost]) - kwargs[:wpost]/2] for
+                          -j*(lbeamy + kwargs[:wpost]) + kwargs[:wpost]/2] for
                              i in 1:nx, j in 1:ny]
     #however, we want the objective at the middle of this maximal array, so let's move all
-    #these points to be centered around kernelsize/2
-    postcoords = [tlpc - kernelsize/2 for tlpc in topleftpostcoords]
+    #these points to be centered around the center of the 'maximal' array
+    postcoords = [tlpc - [1,-1].*kernelsize/2 for tlpc in topleftpostcoords]
     #little helper function
-    function onepost(postcenter,left,bottom)
+    function onepost(postcenter,left,bottom,toprow)
         thispost = translate(post(;kwargs...),postcenter,preserveframe=true)
         #beam(nsegs::Int,startx,stopx;kwargs...)
         #first build 'raw' beams around (0,0) and then translate them
@@ -402,27 +464,53 @@ function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,kwargs...)
         topbeam = translate(rotate(rawtopbeam,pi/2,preserveframe=true),
                             postcenter,preserveframe=true)
         allbeams=[topbeam]
+        hammocks=Block{HatchedSlice}[]
         if left
             push!(allbeams,leftbeam)
+            ht = hammock(lbeamx,lbeamy,toprow,false;kwargs...)
+            push!(hammocks,translate(ht,postcenter + [-(kwargs[:wpost] + lbeamx)/2,
+                                                      (kwargs[:wpost] + lbeamy)/2],
+                                     preserveframe=true))
+            #also need one underneath us if bottom
+            if bottom
+                #i.e. if left and bottom, this implies we are on the bottom row
+                hb=hammock(lbeamx,lbeamy,false,true;kwargs...)
+                push!(hammocks,translate(hb,postcenter + [-(kwargs[:wpost] + lbeamx)/2,
+                                                          -(kwargs[:wpost] + lbeamy)/2],
+                                         preserveframe=true))
+            end
         end
         if bottom
             #make the bottom beam by rotating topbeam
             push!(allbeams,rotate(topbeam,pi,postcenter,preserveframe=true))
         end
         #make a namedtuple so we can arrange things nicely in the enclosing scope
-        (post=thispost,beams=allbeams)
+        (post=thispost,beams=allbeams,hammocks=hammocks)
     end
     needleft = [(i==1) ? lbeams : true for i in 1:nx, j in 1:ny]
     needbottom = [(j==ny) ? bbeams : false for i in 1:nx, j in 1:ny]
-    units = map(zip(postcoords,needleft,needbottom)) do (pc,nl,nb)
-        onepost(pc,nl,nb)
+    intoprow = [(j==1) ? toprow : false for i in 1:nx, j in 1:ny]
+    units = map(zip(postcoords,needleft,needbottom,intoprow)) do (pc,nl,nb,tr)
+        onepost(pc,nl,nb,tr)
     end
     uvec = reshape(units,:)
     leftsegs = vcat((b.leftsegs for u in uvec for b in u.beams)...)
     rightsegs = vcat((b.rightsegs for u in uvec for b in u.beams)...)
     keystones = collect(b.keystone for u in uvec for b in u.beams)
     posts = [u.post for u in uvec]
-    (posts=posts,leftsegs=leftsegs,rightsegs=rightsegs,keystones=keystones)
+    hammocks = vcat((u.hammocks for u in uvec)...)
+    #now we arrange how we want things to be printed
+    #all the posts should be written in parallel
+    postblock=merge(posts...)
+    #now we want each 'matching' segment of the beams to be written in parallel
+    #i.e. the first leftseg and the first rightseg for each beam should be written together,
+    #then the second, etc. all of the keystones last
+    segblocks = map(zip(leftsegs,rightsegs)) do thesesegs
+        merge(thesesegs...)
+    end
+    keyblock = merge(keystones...)
+    #so now we print the posts first, then the segs, then the keystones, and then the hammocks
+    SuperBlock(postblock,segblocks...,keyblock,hammocks...)
 end
 
 end # module Waffle
