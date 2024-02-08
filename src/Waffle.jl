@@ -3,8 +3,45 @@ using Tessen, Delica, Unitful, Ahmes, Statistics
 #go get some internal Tessen stuff
 import Tessen:HatchLine, pointalong, intersections
 
+export createconfig, scaffold
+
+"""
+```julia
+createconfig([filename])
+```
+Write an example config file to `filename`. If `filename` is omitted, the file
+will be written to `"config.jl"`.
+
+# Configuration Parameters
+- lscaf: scaffold length
+- wscaf: scaffold width
+- dfield: calibrated FOV for the objective being used
+- hbottom: distance from the bottom of the post to the bottom of the beams
+- htop: distance from the bottom of the beams to the top of the posts
+- chamferbottom: angle at which the bottoms of the posts and beams should be chamfered
+- chamfertop: angle at which the topss of the posts and beams should be chamfered
+- cutangle: angles at which blocks should be cut to avoid shadowing
+- overlap: amount that neighboring blocks should overlap to ensure they are connected
+- dslice: slicing distance
+- wbumper: width of the bumpers
+- fillet: fillet radius on xz and yz crossections of the posts and bumpers
+- wpost: post width
+- hbeam: beam height
+- wbeam: beam width
+- lbeammax: maximum total beam length
+- maxseglength: maximum length of a single beam segment
+- keygap: closest point between the two halves of a beam before they are closed with a keystone
+- dhammockhatch: hammock hatching distance
+- dhatch: hatching distance for posts, beams and bumpers
+- laserpower: laser power for posts, beams and bumpers
+- scanspeed: scan speed for posts, beams and bumpers
+- stagespeed: max stage speed
+- interfacepos: how far into the substrate writing should begin
+- hamscanspeed: scan speed for hammocks
+- hamlaserpower: laser power for hammocks
+"""
 function createconfig(filename="config.jl")
-    config = Dict(
+    config = """Dict(
         :lscaf => 6u"mm",
         :wscaf => 4u"mm",
         :dfield => 1750u"µm",
@@ -12,7 +49,6 @@ function createconfig(filename="config.jl")
         :htop => 50u"µm",
         :chamferbottom => pi/6,
         :chamfertop => pi/6,
-        :chamferbottom => pi/6,
         :cutangle => pi/6,
         :overlap => 10u"µm",
         :dslice => 1u"µm",
@@ -33,6 +69,10 @@ function createconfig(filename="config.jl")
         :hamscanspeed => 10000u"µm/s",
         :hamlaserpower => 100u"mW"
     )
+    """
+    open(filename,"w") do io
+        print(io,config)
+    end
 end
 
 function bumperedgecoords(;kwargs...)
@@ -386,17 +426,6 @@ end
 #draw a hammock, it will be centered on (0,0) if topflat and bottomflat are both false
 #those arguments will add corners so it mates flush with a bumper
 function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
-    #====
-    #starting in the top right and going ccw, the coordinates of the enclosing rectangle is:
-    xmag = (lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2
-    ymag = (lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2
-    vrect = map([[1,1],
-                 [-1,1],
-                 [-1,-1],
-                 [1,-1]]) do c
-                     [xmag,ymag] .* c
-                 end
-    ===#
     #the coordinates of the vertices which make up the top right cut off corner are
     firstverts = [[lbeamx/2,(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2],
                   [(lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2,lbeamy/2]]
@@ -459,7 +488,9 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
                               kwargs[:wpost]/2 -kwargs[:overlap]] for i in 1:nx, j in 1:ny]
     #however, we want the objective at the middle of this maximal array, so let's move all
     #these points to be centered around the center of the 'maximal' array
-    postcoords = [tlpc - [1,-1].*kernelsize/2 for tlpc in topleftpostcoords]
+    postcoords = map(topleftpostcoords) do tlpc
+        tlpc - [1,-1].*kernelsize/2
+    end
     #little helper function
     function onepost(postcenter,left,bottom,toprow)
         thispost = translate(post(;kwargs...),postcenter,preserveframe=true)
@@ -503,8 +534,12 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
         onepost(pc,nl,nb,tr)
     end
     uvec = reshape(units,:)
-    leftsegs = vcat((b.leftsegs for u in uvec for b in u.beams)...)
-    rightsegs = vcat((b.rightsegs for u in uvec for b in u.beams)...)
+    #get a vector where each entry is a 'half' beam
+    beamvec = vcat(map(uvec) do uv
+                       vcat(map(uv.beams) do b
+                                [b.leftsegs, b.rightsegs]
+                            end...)
+                   end...)
     keystones = collect(b.keystone for u in uvec for b in u.beams)
     posts = [u.post for u in uvec]
     hammocks = vcat((u.hammocks for u in uvec)...)
@@ -514,7 +549,7 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
     #now we want each 'matching' segment of the beams to be written in parallel
     #i.e. the first leftseg and the first rightseg for each beam should be written together,
     #then the second, etc. all of the keystones last
-    segblocks = map(zip(leftsegs,rightsegs)) do thesesegs
+    segblocks = map(zip(beamvec...)) do thesesegs
         merge(thesesegs...)
     end
     keyblock = merge(keystones...)
@@ -522,8 +557,18 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
     (posts=postblock,support=SuperBlock(segblocks...,keyblock), hammocks=SuperBlock(hammocks...))
 end
 
-#scaffoldcenter is where in xy on the stage the scaffold should be written
-function scaffold(scaffolddir;kwargs...)
+"""
+```julia
+scaffold(scaffolddir[, configfilename])
+scaffold(scaffolddir,configdict)
+```
+Build a directory of .gwl files to build a scaffold in a directory at `scaffolddir`. The
+scaffold's geometrical parameters can be provided as a `Dict` or read from `configfilename`.
+If `configfilename` is omitted, the parameters will be read from `"config.jl"`
+"""
+function scaffold end
+
+function scaffold(scaffolddir,kwargs::Dict)
     #make a folder to hold the files for this scaffold
     mkdir(scaffolddir)
     #move down in there
@@ -627,13 +672,10 @@ function scaffold(scaffolddir;kwargs...)
                      xvariants[:notleftedge]...,yvariants[:middle]...,kwargs...).posts
     @info "compiling posts"
     hatchedposts=hatch(postblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
-    #this is hacky but I need posts to be visible to scripts in 'scripts/'
-    posts=nothing
-    cd("scripts") do
-        posts=CompiledGeometry("posts.gwl",SuperBlock(hatchedposts);
-                               laserpower=kwargs[:laserpower],
-                               scanspeed=kwargs[:scanspeed])
-    end
+    posts=CompiledGeometry(joinpath("scripts","posts.gwl"),SuperBlock(hatchedposts);
+                           laserpower=kwargs[:laserpower],
+                           scanspeed=kwargs[:scanspeed])
+    
     for xv in keys(xvariants)
         kvariants[xv] = Dict()
         for yv in keys(yvariants)
@@ -660,7 +702,7 @@ function scaffold(scaffolddir;kwargs...)
     #to the top left corner of the scaffold is...
     cornertofirstpost = [kwargs[:wbumper]/2,-kwargs[:wbumper] - lbeamy]
     #the distance between the top left corner of the first post and the origin of its kernel is
-    firstposttokc = [(knx*px)/2-lbeamx,(-kny*py-lbeamy)/2 - lbeamy]
+    firstposttokc = [(knx*px)/2-lbeamx,(-kny*py-lbeamy)/2 + lbeamy]
     #therefore, the top left corner of the scaffold to the origin of the first kernel is
     cornertokc = cornertofirstpost + firstposttokc
     numkernelx = nx/knx
@@ -713,5 +755,12 @@ function scaffold(scaffolddir;kwargs...)
     GWLJob(joinpath(scaffolddir,"scaffold.gwl"),bumpers,vcat(kvec...)...;
            stagespeed=kwargs[:stagespeed],interfacepos=kwargs[:interfacepos])
 end
+
+function scaffold(scaffolddir,configfilename::String)
+    config = include(configfilename)
+    scaffold(scaffolddir,config)
+end
+
+scaffold(scaffolddir) = scaffold(scaffolddir,"config.jl")
 
 end # module Waffle
