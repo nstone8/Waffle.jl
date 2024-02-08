@@ -536,12 +536,13 @@ function scaffold(scaffolddir;kwargs...)
     btop=translate(b,[0u"µm",(kwargs[:wscaf]-kwargs[:wbumper])/2,0u"µm"])
     #get the bottom by rotation
     bbottom = rotate(btop,pi)
+    @info "compiling bumpers"
     tophatched=hatch(btop,dhatch=kwargs[:dhatch],bottomdir=pi/4)
     bottomhatched=hatch(bbottom,dhatch=kwargs[:dhatch],bottomdir=pi/4)
     bumpers = CompiledGeometry(joinpath("scripts","bumpers.gwl"),tophatched,bottomhatched;
                                laserpower=kwargs[:laserpower],
                                scanspeed=kwargs[:scanspeed])
-    #determine our kernel parameter
+    #determine our kernel parameters
     #maximum possible pitch
     pmax = kwargs[:wpost] + kwargs[:lbeammax]
     #calculate our grid dimensions
@@ -555,13 +556,15 @@ function scaffold(scaffolddir;kwargs...)
         1 + 
         ceil(Int,
              #distance from the end of the leftmost post to the end of the scaffold
-             (kwargs[:lscaf] - kwargs[:wpost])/
+             #we have to subtract off wbumper to account for the rounded ends of the
+             #bumper
+             (kwargs[:lscaf] - kwargs[:wpost] - kwargs[:wbumper])/
                  pmax)
 
     #get the actual beam lengths
     nbeamx = nx - 1
     nbeamy = ny + 1
-    lbeamx = (kwargs[:lscaf] - nx*kwargs[:wpost])/nbeamx
+    lbeamx = (kwargs[:lscaf] - nx*kwargs[:wpost] - kwargs[:wbumper])/nbeamx
     lbeamy = (kwargs[:wscaf]-2*kwargs[:wbumper] - ny*kwargs[:wpost])/nbeamy
     @assert lbeamx < kwargs[:lbeammax]
     @assert lbeamy < kwargs[:lbeammax]
@@ -622,6 +625,7 @@ function scaffold(scaffolddir;kwargs...)
     #all posts are the same
     postblock=kernel(knx,kny,px,py,nseg;
                      xvariants[:notleftedge]...,yvariants[:middle]...,kwargs...).posts
+    @info "compiling posts"
     hatchedposts=hatch(postblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
     #this is hacky but I need posts to be visible to scripts in 'scripts/'
     posts=nothing
@@ -636,6 +640,7 @@ function scaffold(scaffolddir;kwargs...)
             thiskernel = kernel(knx,kny,px,py,nseg;
                                 xvariants[xv]...,yvariants[yv]...,kwargs...)
             #hatch it
+            @info "compiling $(join([xv,yv])) kernel"
             thissupport = hatch(thiskernel.support;dhatch=kwargs[:dhatch],bottomdir=pi/4)
             thishammocks = hatch(thiskernel.hammocks;dhatch=kwargs[:dhatch],bottomdir=pi/4)
             tksupport = CompiledGeometry(joinpath("scripts",join([xv,yv,"_structure.gwl"])),
@@ -653,7 +658,7 @@ function scaffold(scaffolddir;kwargs...)
     #the kernels were built so that they are centered on a 'maximal' kernel
     #the coordinates of the top left corner of the top left post in the top left kernel relative
     #to the top left corner of the scaffold is...
-    cornertofirstpost = [0u"µm",-kwargs[:wbumper] - lbeamy]
+    cornertofirstpost = [kwargs[:wbumper]/2,-kwargs[:wbumper] - lbeamy]
     #the distance between the top left corner of the first post and the origin of its kernel is
     firstposttokc = [(knx*px)/2-lbeamx,(-kny*py-lbeamy)/2 - lbeamy]
     #therefore, the top left corner of the scaffold to the origin of the first kernel is
@@ -661,7 +666,7 @@ function scaffold(scaffolddir;kwargs...)
     numkernelx = nx/knx
     numkernely = ny/kny
     #the coords of all of the kernel centers relative to the top left corner
-    cornertoallcenters = [cornertokc + [knx*px*i,kny*py*j] for
+    cornertoallcenters = [cornertokc + [knx*px*i,-kny*py*j] for
                               i in 0:(numkernelx-1), j in 0:(numkernely-1)]
     #coords of all of the kernel origins relative to the center of the scaffold
     relcenters = map(cornertoallcenters) do ctac;
@@ -692,9 +697,9 @@ function scaffold(scaffolddir;kwargs...)
         [tposts,tsupport,thammocks]
     end
     #we would like to write the kernels in a serpentine top to bottom left to right
-    kcols = [kernelmat[:,j] for j in 1:size(kernelmat)[2]]
+    kcols = [kernelmat[i,:] for i in 1:size(kernelmat)[1]]
     #snakify
-    for i in length(kcols)
+    for i in 1:length(kcols)
         if iseven(i)
             reverse!(kcols[i])
         end
