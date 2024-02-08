@@ -1,5 +1,5 @@
 module Waffle
-using Tessen, Delica, Unitful
+using Tessen, Delica, Unitful, Ahmes, Statistics
 #go get some internal Tessen stuff
 import Tessen:HatchLine, pointalong, intersections
 
@@ -23,8 +23,15 @@ function createconfig(filename="config.jl")
         :wbeam => 25u"µm",
         :lbeammax => 120u"µm",
         :maxseglength => 50u"µm",
+        :keygap => 20u"µm",
         :dhammockhatch => 1u"µm",
-        :dhatch => 300u"nm"
+        :dhatch => 300u"nm",
+        :laserpower => 100u"mW",
+        :scanspeed => 100000u"µm/s",
+        :stagespeed => 100u"µm/s",
+        :interfacepos => 10u"µm",
+        :hamscanspeed => 10000u"µm/s",
+        :hamlaserpower => 100u"mW"
     )
 end
 
@@ -140,16 +147,14 @@ function bumper(;kwargs...)
     #we will build the bumper up to a z height of (hbottom+htop+overlap)/2 on the first pass, and
     #then glue on the top coming back
     zmid=(kwargs[:hbottom]+kwargs[:htop]+kwargs[:overlap])/2
-    #all the centers of the arc making up the left face will be in the same place
-    cleftarc = [-lseg/2 + kwargs[:wbumper]/2, 0u"µm"]
     lbslices = map(range(start=0u"µm",step=kwargs[:dslice],stop=zmid)) do z
-        #get the x coordinate of our bottom left corner, this should be -lseg/2
-        #for our widest slice
         ycoords = bec(z)
         wslice = abs(-(ycoords...))
         #get the x coordinate of our bottom right corner, this should be lseg/2
         #for the bottom slice
         xbr = (lseg/2) - z*tan(kwargs[:cutangle])
+        #get the center of the arc making up the left face
+        cleftarc = [-lseg/2 + kwargs[:wbumper]/2, mean(ycoords)]
         #draw the edges
         e = [ArcEdge(cleftarc,wslice/2,pi/2,3pi/2),
              LineEdge([cleftarc[1],ycoords[1]],[xbr,ycoords[1]]),
@@ -164,13 +169,13 @@ function bumper(;kwargs...)
 
     #we will now do the bottom of the rightmost block. This will be the mirror image of lbblock
     #but with the cut going the opposite way (i.e. the topmost slice is longest)
-    crightarc = [lseg/2 - kwargs[:wbumper]/2, 0u"µm"]
     rbslices = map(range(start=0u"µm",step=kwargs[:dslice],stop=zmid)) do z
         ycoords = bec(z)
         wslice = abs(-(ycoords...))
         #get the x coordinate of our bottom left corner, this should be -lseg/2
         #for the topmost slice
         xbl = (-lseg/2) + (zmid-z)*tan(kwargs[:cutangle])
+        crightarc = [lseg/2 - kwargs[:wbumper]/2, mean(ycoords)]
         #draw the edges
         e = [ArcEdge(crightarc,wslice/2,3pi/2,pi/2),
              LineEdge([crightarc[1],ycoords[2]],[xbl,ycoords[2]]),
@@ -192,13 +197,13 @@ function bumper(;kwargs...)
     #likely to line up
 
     zmid2=(kwargs[:hbottom]+kwargs[:htop]-kwargs[:overlap])/2
-    crightarc2 = [lseg/4 - kwargs[:wbumper]/2, 0u"µm"]
     rtslices = map(range(start=zmid2,step=kwargs[:dslice],stop=kwargs[:hbottom]+kwargs[:htop])) do z
         ycoords = bec(z)
         wslice = abs(-(ycoords...))
         #get the x coordinate of our bottom left corner, this should be -lseg/4
         #for the bottom slice
         xbl = (-lseg/4) + (z)*tan(kwargs[:cutangle])
+        crightarc2 = [lseg/4 - kwargs[:wbumper]/2, mean(ycoords)]
         #draw the edges
         e = [ArcEdge(crightarc2,wslice/2,3pi/2,pi/2),
              LineEdge([crightarc2[1],ycoords[2]],[xbl,ycoords[2]]),
@@ -212,13 +217,13 @@ function bumper(;kwargs...)
     #the geometry in rtblock to start at z=0 in the local frame
     rtblock=translate(rtblock,[0u"µm",0u"µm",-zmid2],preserveframe=true)
 
-    cleftarc2 = [-lseg/4 + kwargs[:wbumper]/2, 0u"µm"]
     ltslices = map(range(start=zmid2,step=kwargs[:dslice],stop=kwargs[:hbottom]+kwargs[:htop])) do z
         ycoords = bec(z)
         wslice = abs(-(ycoords...))
         #get the x coordinate of our bottom right corner, this should be lseg/4
         #for the topmost slice
         xbr = (lseg/4) + (z-kwargs[:htop])*tan(kwargs[:cutangle])
+        cleftarc2 = [-lseg/4 + kwargs[:wbumper]/2, mean(ycoords)]
         #draw the edges
         e = [ArcEdge(cleftarc2,wslice/2,pi/2,3pi/2),
              LineEdge([cleftarc2[1],ycoords[1]],[xbr,ycoords[1]]),
@@ -319,9 +324,13 @@ end
 function Beam(nsegs::Int,startx,stopx;kwargs...)
     #nsegs needs to be odd
     @assert isodd(nsegs)
+    #we want the keystone to be as short as possible. Point of closest approach between the
+    #two halves is set by `keygap`
+    #length of the keystone measured at the beam midline
+    lkey = kwargs[:keygap] + kwargs[:hbeam]*tan(kwargs[:cutangle])
     #the first segment needs to be chamfered according to `chamfertop`, we will do the rest at
     #cutangle
-    distperseg = (stopx - startx)/nsegs
+    distperseg = (stopx - startx - lkey)/(nsegs-1)
     lseg = distperseg + kwargs[:overlap]
     leftsegs = map(1:((nsegs-1)/2)) do i
         #the first segment needs to be a little longer and chamfered differently
@@ -350,8 +359,8 @@ function Beam(nsegs::Int,startx,stopx;kwargs...)
     rightsegs = map(leftsegs) do ls
         rotate(ls,pi,cbeam,preserveframe=true)
     end
-    #the keystone is the same size as the other segments but cut differently
-    keystone = box(lseg,kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+    #the keystone is cut differently
+    keystone = box(lkey,kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
                    chamfer =[-kwargs[:cutangle]   -kwargs[:cutangle]
                              kwargs[:cutangle]    kwargs[:cutangle]])
     #move it into position
@@ -436,18 +445,18 @@ end
 #build a kernel with a nx x ny array of posts with pitch of px and py in each dimension
 #lbeams and bbeams controls wheter beams should be drawn connecting to geometry to the left
 #or below the current kernel
-function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,toprow=false,kwargs...)
+function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
     #calculate beam lengths
     lbeamx = px - kwargs[:wpost]
     lbeamy = py - kwargs[:wpost]
     #with the optional beams to the left and bottom, the total size of the array is...
-    kernelsize = [nx*(kwargs[:wpost] + lbeamx),
-                  ny*(kwargs[:wpost] + lbeamy) + lbeamy]
+    kernelsize = [nx*(kwargs[:wpost] + lbeamx) + kwargs[:overlap], #one dangling beam
+                  ny*(kwargs[:wpost] + lbeamy) + lbeamy + 2*kwargs[:overlap]] #two danglers
     #if we think of the upper left corner of this maximal array as (0,0) the post coordinates are...
     #increasing y is up/north
-    topleftpostcoords = [[i*(lbeamx + kwargs[:wpost]) - kwargs[:wpost]/2,
-                          -j*(lbeamy + kwargs[:wpost]) + kwargs[:wpost]/2] for
-                             i in 1:nx, j in 1:ny]
+    topleftpostcoords = [[i*(lbeamx + kwargs[:wpost]) - kwargs[:wpost]/2 + kwargs[:overlap],
+                          -j*(lbeamy + kwargs[:wpost]) +
+                              kwargs[:wpost]/2 -kwargs[:overlap]] for i in 1:nx, j in 1:ny]
     #however, we want the objective at the middle of this maximal array, so let's move all
     #these points to be centered around the center of the 'maximal' array
     postcoords = [tlpc - [1,-1].*kernelsize/2 for tlpc in topleftpostcoords]
@@ -510,7 +519,194 @@ function kernel(nx,ny,px,py,nseg;lbeams=false,bbeams=false,toprow=false,kwargs..
     end
     keyblock = merge(keystones...)
     #so now we print the posts first, then the segs, then the keystones, and then the hammocks
-    SuperBlock(postblock,segblocks...,keyblock,hammocks...)
+    (posts=postblock,support=SuperBlock(segblocks...,keyblock), hammocks=SuperBlock(hammocks...))
+end
+
+#scaffoldcenter is where in xy on the stage the scaffold should be written
+function scaffold(scaffolddir;kwargs...)
+    #make a folder to hold the files for this scaffold
+    mkdir(scaffolddir)
+    #move down in there
+    cd(scaffolddir)
+    #make a folder for our pre-compiled scaffold parts
+    mkdir("scripts")
+    #assemble and pre-compile the bumpers
+    b=bumper(;kwargs...)
+    #this bumper is currently at the origin, translate it up into position
+    btop=translate(b,[0u"µm",(kwargs[:wscaf]-kwargs[:wbumper])/2,0u"µm"])
+    #get the bottom by rotation
+    bbottom = rotate(btop,pi)
+    tophatched=hatch(btop,dhatch=kwargs[:dhatch],bottomdir=pi/4)
+    bottomhatched=hatch(bbottom,dhatch=kwargs[:dhatch],bottomdir=pi/4)
+    bumpers = CompiledGeometry(joinpath("scripts","bumpers.gwl"),tophatched,bottomhatched;
+                               laserpower=kwargs[:laserpower],
+                               scanspeed=kwargs[:scanspeed])
+    #determine our kernel parameter
+    #maximum possible pitch
+    pmax = kwargs[:wpost] + kwargs[:lbeammax]
+    #calculate our grid dimensions
+    
+    ny = ceil(Int,
+              #distance from the top of the top row of posts to the bottom bumper
+              (kwargs[:wscaf] - 2*kwargs[:wbumper] - kwargs[:lbeammax])/
+                  pmax)
+    
+    nx = #start with one post
+        1 + 
+        ceil(Int,
+             #distance from the end of the leftmost post to the end of the scaffold
+             (kwargs[:lscaf] - kwargs[:wpost])/
+                 pmax)
+
+    #get the actual beam lengths
+    nbeamx = nx - 1
+    nbeamy = ny + 1
+    lbeamx = (kwargs[:lscaf] - nx*kwargs[:wpost])/nbeamx
+    lbeamy = (kwargs[:wscaf]-2*kwargs[:wbumper] - ny*kwargs[:wpost])/nbeamy
+    @assert lbeamx < kwargs[:lbeammax]
+    @assert lbeamy < kwargs[:lbeammax]
+    #calculate actual pitch
+    px = lbeamx + kwargs[:wpost]
+    py = lbeamy + kwargs[:wpost]
+    #figure out the biggest kernel which fits neatly into our grid
+    #define a helper function so we can get all multiples of our nx and ny
+    function allmultiples(x)
+	filter(1:x) do y
+	    (x%y) == 0
+	end
+    end
+
+    #what is the biggest 'kernel' of posts that 1) fits evenly into the desired space
+    #and can fit inside a circle with diameter `dfield`
+    #we will assume each 'kernel' includes connecting bridges to the left, top and bottom.
+    #the left bridges will not be written on the left edge and the bottom bridges will only
+    #actually be written on the bottom row
+
+    allnumcombos = [(nxi,nyi) for nxi in allmultiples(nx), nyi in allmultiples(ny)]
+    possiblenumcombos = filter(allnumcombos) do (nxi,nyi)
+	sizex = nxi*px + kwargs[:overlap] #one 'dangling' beam
+	sizey = nyi*py + lbeamy + 2*kwargs[:overlap] #two 'dangling' beams
+	sqrt(sizex^2 + sizey^2) < kwargs[:dfield] #does this fit
+    end
+    #get the option which contains the most posts
+    (_,maxcomboindex) = map(possiblenumcombos) do (nx,ny)
+	nx*ny
+    end |> findmax
+    #assign this max size to variables for convenience
+    (knx,kny) = possiblenumcombos[maxcomboindex]
+    #pre-compile all the different kernel variations assuming we have more than one FOV in every
+    #direction
+    #first we need to know the number of segments we're going to want in our beams
+    longestbeam = max(lbeamx,lbeamy)
+    #this is the definition of lkey copy-pasted from beam()
+    lkey = kwargs[:keygap] + kwargs[:hbeam]*tan(kwargs[:cutangle])
+    halfseglength = (longestbeam - lkey)/2
+    #did this using half the beam to guarentee this would be a even number
+    nseg = 2*(ceil(Int,halfseglength/kwargs[:maxseglength]))
+    #we count the keystone as a segment above
+    nseg += 1
+    #going from left to right, we care if a kernel is on the leftmost edge or not as kernels
+    #on the leftmost edge don't need left beams
+    xvariants = Dict(:leftedge => (lbeams = false,),:notleftedge => (lbeams = true,))
+    #from top to bottom, we care if we're on the top, in the middle, or on the bottom
+    #we will also build the case where we're on the top and bottom (i.e. the scaffold is one
+    #FOV in width for completeness
+    yvariants = Dict(
+        :top => (toprow=true,bbeams=false),
+        :middle => (toprow=false,bbeams=false),
+        :bottom => (toprow=false,bbeams=true),
+        :topbottom => (toprow=true,bbeams=true)
+    )
+    #build all the combinations
+    kvariants = Dict()
+    #all posts are the same
+    postblock=kernel(knx,kny,px,py,nseg;
+                     xvariants[:notleftedge]...,yvariants[:middle]...,kwargs...).posts
+    hatchedposts=hatch(postblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
+    #this is hacky but I need posts to be visible to scripts in 'scripts/'
+    posts=nothing
+    cd("scripts") do
+        posts=CompiledGeometry("posts.gwl",SuperBlock(hatchedposts);
+                               laserpower=kwargs[:laserpower],
+                               scanspeed=kwargs[:scanspeed])
+    end
+    for xv in keys(xvariants)
+        kvariants[xv] = Dict()
+        for yv in keys(yvariants)
+            thiskernel = kernel(knx,kny,px,py,nseg;
+                                xvariants[xv]...,yvariants[yv]...,kwargs...)
+            #hatch it
+            thissupport = hatch(thiskernel.support;dhatch=kwargs[:dhatch],bottomdir=pi/4)
+            thishammocks = hatch(thiskernel.hammocks;dhatch=kwargs[:dhatch],bottomdir=pi/4)
+            tksupport = CompiledGeometry(joinpath("scripts",join([xv,yv,"_structure.gwl"])),
+                                         thissupport;laserpower=kwargs[:laserpower],
+                                         scanspeed=kwargs[:scanspeed])
+            
+            tkhammocks = CompiledGeometry(joinpath("scripts",join([xv,yv,"_hammocks.gwl"])),
+                                          thishammocks;laserpower=kwargs[:hamlaserpower],
+                                          scanspeed=kwargs[:hamscanspeed])
+            
+            kvariants[xv][yv]=Dict(:support => tksupport,:hammocks => tkhammocks)
+        end
+    end
+    #place all the kernels and hammocks
+    #the kernels were built so that they are centered on a 'maximal' kernel
+    #the coordinates of the top left corner of the top left post in the top left kernel relative
+    #to the top left corner of the scaffold is...
+    cornertofirstpost = [0u"µm",-kwargs[:wbumper] - lbeamy]
+    #the distance between the top left corner of the first post and the origin of its kernel is
+    firstposttokc = [(knx*px)/2-lbeamx,(-kny*py-lbeamy)/2 - lbeamy]
+    #therefore, the top left corner of the scaffold to the origin of the first kernel is
+    cornertokc = cornertofirstpost + firstposttokc
+    numkernelx = nx/knx
+    numkernely = ny/kny
+    #the coords of all of the kernel centers relative to the top left corner
+    cornertoallcenters = [cornertokc + [knx*px*i,kny*py*j] for
+                              i in 0:(numkernelx-1), j in 0:(numkernely-1)]
+    #coords of all of the kernel origins relative to the center of the scaffold
+    relcenters = map(cornertoallcenters) do ctac;
+        ctac - [kwargs[:lscaf]/2, -kwargs[:wscaf]/2]
+    end
+    #place our kernel objects in the right positions
+    kernelindices = [[i,j] for i in 1:numkernelx, j in 1:numkernely]
+    kernelmat = map(zip(kernelindices,relcenters)) do ((i,j),kcenter)
+        #add the z coordinate to kcenter
+        push!(kcenter,0u"µm")
+        #figure out what kernel variant we want
+        xv = (i==1) ? :leftedge : :notleftedge
+        yv = if numkernely==1
+            :topbottom
+        elseif j==1
+            :top
+        elseif j==numkernely
+            :bottom
+        else
+            :middle
+        end
+        tk=kvariants[xv][yv]
+        #need to translate both of them to kcenter
+        tposts = translate(posts,kcenter)
+        tsupport=translate(tk[:support],kcenter)
+        thammocks=translate(tk[:hammocks],kcenter)
+        #write the posts, then structure then hammocks
+        [tposts,tsupport,thammocks]
+    end
+    #we would like to write the kernels in a serpentine top to bottom left to right
+    kcols = [kernelmat[:,j] for j in 1:size(kernelmat)[2]]
+    #snakify
+    for i in length(kcols)
+        if iseven(i)
+            reverse!(kcols[i])
+        end
+    end
+    #kvec is a vector with structure [[structure1,hammock1],[structure2,hammock2]...]
+    kvec = vcat(kcols...)
+    #make the scaffold job
+    #come back up one level in our directory structure so the paths will be nice for our multijob
+    #later
+    cd(dirname(pwd()))
+    GWLJob(joinpath(scaffolddir,"scaffold.gwl"),bumpers,vcat(kvec...)...;
+           stagespeed=kwargs[:stagespeed],interfacepos=kwargs[:interfacepos])
 end
 
 end # module Waffle
