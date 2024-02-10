@@ -739,7 +739,7 @@ function scaffold(scaffolddir,kwargs::Dict)
             #write the posts, then structure then hammocks
             [tposts,tsupport,thammocks]
         end
-        #we would like to write the kernels in a serpentine top to bottom left to right
+        #======================old serpentine attempt======================================
         kcols = [kernelmat[i,:] for i in 1:size(kernelmat)[1]]
         #snakify
         for i in 1:length(kcols)
@@ -749,6 +749,10 @@ function scaffold(scaffolddir,kwargs::Dict)
         end
         #kvec is a vector with structure [[structure1,hammock1],[structure2,hammock2]...]
         kvec = vcat(kcols...)
+        ==================================================================================#
+        #print the kernels in lexical order. In the future we could switch to a serpentine,
+        #but that would require thinking about print direction while generating the kernels
+        kvec = reshape(kernelmat,:)
         #return our compiled geometry so we can come back up one level in the directory structure
         #to make the job. This will make the paths nice for our multijob
         #later
