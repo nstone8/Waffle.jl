@@ -612,8 +612,8 @@ function scaffold(scaffolddir,kwargs::Dict)
         nbeamy = ny + 1
         lbeamx = (kwargs[:lscaf] - nx*kwargs[:wpost] - kwargs[:wbumper])/nbeamx
         lbeamy = (kwargs[:wscaf]-2*kwargs[:wbumper] - ny*kwargs[:wpost])/nbeamy
-        @assert lbeamx < kwargs[:lbeammax]
-        @assert lbeamy < kwargs[:lbeammax]
+        @assert lbeamx <= kwargs[:lbeammax]
+        @assert lbeamy <= kwargs[:lbeammax]
         #calculate actual pitch
         px = lbeamx + kwargs[:wpost]
         py = lbeamy + kwargs[:wpost]
