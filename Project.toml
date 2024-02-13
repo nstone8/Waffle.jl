@@ -1,7 +1,7 @@
 name = "Waffle"
 uuid = "f62dbe71-e6a6-4df2-9a5f-437c1dc4c8cd"
 authors = ["Nick Stone <nicholasestone@proton.me>"]
-version = "0.1.4"
+version = "0.1.5"
 
 [deps]
 Ahmes = "8b92ad99-622a-4a49-8522-837eeba52978"

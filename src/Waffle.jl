@@ -116,8 +116,7 @@ function bumperedgecoords(;kwargs...)
 end
 
 #helper function to build a series of segments to get us from startx to endx
-#args for current version: endx=(kwargs[:lscaf]/2 - lseg + zmid*tan(kwargs[:cutangle]))
-#startx = (-kwargs[:lscaf]/2 + lseg)
+#we will assume startx and endx do not include overlap on either side
 function bumpersegtrain(startx,endx,startz,endz,bec;kwargs...)
     #to connect the left and right sides, we will use a bunch of identical segments cut to
     #have overhangs on the left side and placed to overlap with each other
@@ -127,8 +126,8 @@ function bumpersegtrain(startx,endx,startz,endz,bec;kwargs...)
     #the length of every slice should be constant, the maximum progress we can make per slice
     #is set by
     lslicemax = lseg - (olength/2) - kwargs[:overlap]
-    #the distance we have to cover (including overlapping at the far end is...
-    reqdist = endx -  startx + sign(endx-startx)*kwargs[:overlap]
+    #the distance we have to cover (including overlapping at either end) is...
+    reqdist = endx -  startx + 2*sign(endx-startx)*kwargs[:overlap]
 
     numsegs = ceil(Int,abs(reqdist/lslicemax))
     distperseg = reqdist/numsegs
@@ -154,7 +153,7 @@ function bumpersegtrain(startx,endx,startz,endz,bec;kwargs...)
     end
     #place the first such block overlapping with lbblock
     firstseg = Block(segslices...,origin=[startx - sign(distperseg)*kwargs[:overlap],
-                                                      0u"µm",startz])
+                                          0u"µm",startz])
     #we actually want the objective to be centered on the segment during the print, so we need to
     #move the local origin. we will do this by sliding the geometry to the left while using
     #preserveframe, and then slide the resulting object back
@@ -162,7 +161,7 @@ function bumpersegtrain(startx,endx,startz,endz,bec;kwargs...)
     #frame, the origin of which is at startz in the enclosing frame
     fbsdisp = sign(distperseg)*olength+(distperseg/2)
     blocks = [translate(translate(firstseg,[-fbsdisp,0u"µm",-startz],preserveframe=true),
-                                 [fbsdisp,0u"µm"])]
+                        [fbsdisp,0u"µm"])]
     #build the rest by copying
     for _ in 2:numsegs
         push!(blocks,translate(blocks[end],[distperseg,0u"µm"]))
