@@ -1,11 +1,12 @@
 name = "Waffle"
 uuid = "f62dbe71-e6a6-4df2-9a5f-437c1dc4c8cd"
 authors = ["Nick Stone <nicholasestone@proton.me>"]
-version = "0.1.5"
+version = "0.1.6"
 
 [deps]
 Ahmes = "8b92ad99-622a-4a49-8522-837eeba52978"
 Delica = "12514ac0-2501-4d25-a658-60c223cc758c"
+Primes = "27ebfcd6-29c5-5fa9-bf4b-fb8fc14df3ae"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Tessen = "075f01f5-5a08-42fe-8034-8ba17c561f6c"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"

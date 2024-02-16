@@ -1,5 +1,5 @@
 module Waffle
-using Tessen, Delica, Unitful, Ahmes, Statistics
+using Tessen, Delica, Unitful, Ahmes, Statistics, Primes
 #go get some internal Tessen stuff
 import Tessen:HatchLine, pointalong, intersections
 
@@ -606,6 +606,11 @@ function scaffold(scaffolddir,kwargs::Dict)
                  (kwargs[:lscaf] - kwargs[:wpost] - kwargs[:wbumper])/
                      pmax)
 
+        #we don't want nx or ny to be prime
+        (nx,ny) = map([nx,ny]) do ni
+            isprime(ni) ? ni+1 : ni
+        end
+        
         #get the actual beam lengths
         nbeamx = nx - 1
         nbeamy = ny + 1
