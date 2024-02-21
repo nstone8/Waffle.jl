@@ -811,9 +811,9 @@ function buildmj(jobs::Matrix{<:Pair})
             (center,config) = thisrow[i]
             #assume stagespeed is always the same
             stagespeed = config[:stagespeed]
-            thisjob = (center => scaffold("$i|$j",config))
+            thisjob = (center => scaffold("$i-$j",config))
             #write the configuration into the scaffold folder so we can look at it later
-            open(joinpath("$i|$j","config.txt"), "w") do io
+            open(joinpath("$i-$j","config.txt"), "w") do io
                 print(io,config)
             end
             return thisjob
