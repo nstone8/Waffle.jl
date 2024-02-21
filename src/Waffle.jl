@@ -3,7 +3,7 @@ using Tessen, Delica, Unitful, Ahmes, Statistics, Primes
 #go get some internal Tessen stuff
 import Tessen:HatchLine, pointalong, intersections
 
-export createconfig, scaffold
+export createconfig, scaffold, psweep
 
 """
 ```julia
@@ -772,5 +772,128 @@ function scaffold(scaffolddir,configfilename::String)
 end
 
 scaffold(scaffolddir) = scaffold(scaffolddir,"config.jl")
+
+"""
+```julia
+arrangescaffolds(arraydims,arrayshape,arraycenter,maxscafdims)
+```
+Return a `Matrix` with shape `arrayshape` of scaffold coordinate centers centered
+on `arraycenter`. Given a maximum scaffold dimension of `maxscafdims` these scaffolds
+will be guarenteed not to overlap and to fit in a bounding box with size `arraydims`.
+"""
+function arrangescaffolds(arraydims,arrayshape,arraycenter,maxscafdims)
+    #get the corners of our bounding box
+    bboxtopleft = arraycenter + [-arraydims[1], arraydims[2]]/2
+    bboxbottomright = arraycenter + [arraydims[1], -arraydims[2]]/2
+
+    #get the coordinates of our top left and bottom right scaffold
+    firstcenter = bboxtopleft + [maxscafdims[1],-maxscafdims[2]]/2
+    lastcenter = bboxbottomright + [-maxscafdims[1],maxscafdims[2]]/2
+    #this is enough to build the matrix
+    (xrange,yrange) = map(1:2) do d
+        range(start=firstcenter[d],stop=lastcenter[d],length=arrayshape[d])
+    end
+    @assert step(xrange) > maxscafdims[1] "scaffolds would overlap in x direction"
+    @assert (-step(yrange)) > maxscafdims[2] "scaffolds would overlap in y direction"
+    centers = [[x,y] for x in xrange, y in yrange]
+end
+
+#build a multijob from a matrix of `centercoords => config` pairs
+function buildmj(jobs::Matrix{<:Pair})
+    #snake it
+    stagespeed = nothing
+    rowjobs = map(1:size(jobs)[2]) do j
+        thisrow = jobs[:,j]
+        if iseven(j)
+            thisrow = reverse(thisrow)
+        end
+        thesejobs = map(1:length(thisrow)) do i
+            (center,config) = thisrow[i]
+            #assume stagespeed is always the same
+            stagespeed = config[:stagespeed]
+            thisjob = (center => scaffold("$i,$j",config))
+            #write the configuration into the scaffold folder so we can look at it later
+            open(joinpath("$i,$j","config.txt"), w) do io
+                print(io,config)
+            end
+            return thisjob
+        end
+    end
+    multijob("psweep.gwl",vcat(rowjobs...)...;stagespeed)
+end
+
+"""
+```julia
+psweep([config,] p1 => values[, p2 => values]; arraydims, arrayshape, arraycenter)
+```
+Build a `multijob` which builds scaffolds with varying parameters. The final array will have
+shape `arrayshape` centered on `arraycenter`. These scaffolds will be guarenteed not to overlap
+and to fit in a bounding box with size `arraydims`. `config` (provided as a filepath or `Dict`)
+should contain all other configuration parameters. If `config` is not provided, a configuration
+file is assumed to exist at `"config.jl"`. If swept parameters are included in `config` they will
+be ignored.
+"""
+function psweep end
+
+#for one parameter
+function psweep(config::Dict,sweep::Pair{Symbol,<:Vector}; arraydims,arrayshape,arraycenter)
+    #destructure our parameter and values
+    (p,values) = sweep
+    #build a vector of configurations reflecting our parameter sweep
+    configs = map(values) do v
+        thisconfig = copy(config)
+        thisconfig[p] = v
+        return thisconfig
+    end
+
+    maxscafdims = map([:lscaf, :wscaf]) do dim
+        maximum(configs) do c
+            c[dim]
+        end
+    end
+    scafcenters = arrangescaffolds(arraydims,arrayshape,arraycenter,maxscafdims)
+    @assert length(configs) == length(scafcenters) "Number of parameter values must match array size"
+    jobmat = map(zip(scafcenters,reshape(configs,size(scafcenters)...))) do (sc,c)
+        sc => c
+    end
+    buildmj(jobmat)
+end
+
+#for two parameters
+function psweep(config::Dict,sweep1::Pair{Symbol,<:Vector},sweep2::Pair{Symbol,<:Vector};
+                arraydims,arrayshape,arraycenter)
+    #destructure our parameter and values
+    (p1,values1) = sweep1
+    (p2,values2) = sweep2
+    #build a matrix representing our parameter combos
+    pmat = [Dict(p1 => v1, p2 => v2) for v1 in values1, v2 in values2]
+    #now make a matrix of configs
+    configs = map(pmat) do pdict
+        thisconfig = copy(config)
+        for (p,v) in pdict
+            thisconfig[p] = v
+        end
+        return thisconfig
+    end
+
+    maxscafdims = map([:lscaf, :wscaf]) do dim
+        maximum(configs) do c
+            c[dim]
+        end
+    end
+    scafcenters = arrangescaffolds(arraydims,arrayshape,arraycenter,maxscafdims)
+    @assert length(configs) == length(scafcenters) "Number of parameter values must match array size"
+    jobmat = map(zip(scafcenters,configs)) do (sc,c)
+        sc => c
+    end
+    buildmj(jobmat)
+end
+
+function psweep(config::String,args...;kwargs...)
+    cdict = include(config)
+    psweep(cdict,args...;kwargs...)
+end
+
+psweep(args::Vararg{<:Pair{Symbol,<:Vector}};kwargs...) = psweep("config.jl",args...;kwargs...)
 
 end # module Waffle
