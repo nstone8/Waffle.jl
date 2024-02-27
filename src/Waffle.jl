@@ -791,10 +791,19 @@ function arrangescaffolds(arraydims,arrayshape,arraycenter,maxscafdims)
     lastcenter = bboxbottomright + [-maxscafdims[1],maxscafdims[2]]/2
     #this is enough to build the matrix
     (xrange,yrange) = map(1:2) do d
+	if arrayshape[d] == 1
+	    #put it in the middle
+	    return [mean([firstcenter[d],lastcenter[d]])]
+	end
+        #if we have more than one scaffold along this dimension make a range
         range(start=firstcenter[d],stop=lastcenter[d],length=arrayshape[d])
     end
-    @assert step(xrange) > maxscafdims[1] "scaffolds would overlap in x direction"
-    @assert (-step(yrange)) > maxscafdims[2] "scaffolds would overlap in y direction"
+    if xrange isa AbstractRange
+	@assert step(xrange) > maxscafdims[1] "scaffolds would overlap in x direction"
+    end
+    if yrange isa AbstractRange
+	@assert (-step(yrange)) > maxscafdims[2] "scaffolds would overlap in y direction"
+    end
     centers = [[x,y] for x in xrange, y in yrange]
 end
 
