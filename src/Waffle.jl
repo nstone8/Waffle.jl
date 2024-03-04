@@ -3,7 +3,7 @@ using Tessen, Delica, Unitful, Ahmes, Statistics, Primes
 #go get some internal Tessen stuff
 import Tessen:HatchLine, pointalong, intersections
 
-export createconfig, scaffold, psweep
+export createconfig, scaffold, psweep, repjob
 
 """
 ```julia
@@ -904,5 +904,35 @@ function psweep(config::String,args...;kwargs...)
 end
 
 psweep(args::Vararg{<:Pair{Symbol,<:Vector}};kwargs...) = psweep("config.jl",args...;kwargs...)
+
+"""
+```julia
+repjob([config]; arraydims, arrayshape, arraycenter)
+```
+Create a job to write an array of identical scaffolds. The array will have shape `arrayshape`
+centered on `arraycenter`. These scaffolds will be guarenteed not to overlap and to fit in a
+bounding box with size `arraydims`. `config` (provided as a filepath or `Dict`) should contain
+all configuration parameters.
+"""
+function repjob end
+
+function repjob(config::Dict; arraydims,arrayshape,arraycenter)
+    scafcenters = arrangescaffolds(arraydims,arrayshape,arraycenter,[config[:lscaf],config[:wscaf]])
+    #snakify
+    rows = map(1:size(scafcenters)[2]) do j
+        iseven(j) ? reverse(scafcenters[:,j]) : scafcenters[:,j]
+    end
+    #we're going to do one job over and over
+    job = scaffold("scaffold",config)
+    multijob("repjob.gwl",(c => job for c in vcat(rows...))...;
+             stagespeed=config[:stagespeed])
+end
+
+function repjob(config::AbstractString;kwargs...)
+    cdict = include(config)
+    repjob(cdict;kwargs...)
+end
+
+repjob(;kwargs...) = repjob("config.jl";kwargs...)
 
 end # module Waffle
