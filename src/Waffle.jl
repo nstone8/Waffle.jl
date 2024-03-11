@@ -39,6 +39,8 @@ will be written to `"config.jl"`.
 - interfacepos: how far into the substrate writing should begin
 - hamscanspeed: scan speed for hammocks
 - hamlaserpower: laser power for hammocks
+- joistsperbeam: number of joists to put along each beam
+- wjoist: width of each joist
 """
 function createconfig(filename="config.jl")
     config = """Dict(
@@ -67,7 +69,9 @@ function createconfig(filename="config.jl")
         :stagespeed => 100u"µm/s",
         :interfacepos => 10u"µm",
         :hamscanspeed => 10000u"µm/s",
-        :hamlaserpower => 100u"mW"
+        :hamlaserpower => 100u"mW",
+        :joistsperbeam => 1,
+        :wjoist => 10u"µm"
     )
     """
     open(filename,"w") do io
@@ -360,7 +364,7 @@ struct Beam
     keystone
 end
 
-function Beam(nsegs::Int,startx,stopx;kwargs...)
+function Beam(nsegs::Int,startx,stopx,width;kwargs...)
     #nsegs needs to be odd
     @assert isodd(nsegs)
     #we want the keystone to be as short as possible. Point of closest approach between the
@@ -375,11 +379,11 @@ function Beam(nsegs::Int,startx,stopx;kwargs...)
         #the first segment needs to be a little longer and chamfered differently
         segpos = startx + distperseg*((2i-1)/2)
         seg = if i==1
-            box(lseg + (kwargs[:overlap]/2),kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+            box(lseg + (kwargs[:overlap]/2),width,kwargs[:hbeam],kwargs[:dslice],
                 chamfer =[-kwargs[:chamfertop] kwargs[:cutangle]
                           kwargs[:cutangle]    kwargs[:cutangle]])            
         else
-            box(lseg,kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+            box(lseg,width,kwargs[:hbeam],kwargs[:dslice],
                 chamfer =[-kwargs[:cutangle]   kwargs[:cutangle]
                           kwargs[:cutangle]    kwargs[:cutangle]])            
         end
@@ -399,7 +403,7 @@ function Beam(nsegs::Int,startx,stopx;kwargs...)
         rotate(ls,pi,cbeam,preserveframe=true)
     end
     #the keystone is cut differently
-    keystone = box(lkey,kwargs[:wbeam],kwargs[:hbeam],kwargs[:dslice],
+    keystone = box(lkey,width,kwargs[:hbeam],kwargs[:dslice],
                    chamfer =[-kwargs[:cutangle]   -kwargs[:cutangle]
                              kwargs[:cutangle]    kwargs[:cutangle]])
     #move it into position
@@ -424,6 +428,7 @@ end
 
 #draw a hammock, it will be centered on (0,0) if topflat and bottomflat are both false
 #those arguments will add corners so it mates flush with a bumper
+#if kwargs[:joistsperbeam] isn't zero, return multiple little hammocks
 function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     #the coordinates of the vertices which make up the top right cut off corner are
     firstverts = [[lbeamx/2,(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2],
@@ -462,12 +467,95 @@ function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     scaledverts = map(flatverts) do fv
         fv .* [xscale,yscale]
     end
-    outline = Slice([polycontour(scaledverts)])
-    hatchedslices = map([pi/4,3pi/4]) do hd
-        (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
-            hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
+    if iszero(kwargs[:joistsperbeam])
+        outline = Slice([polycontour(scaledverts)])
+        hatchedslices = map([pi/4,3pi/4]) do hd
+            (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
+                hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
+        end
+        return Block(hatchedslices...)
+    else
+        #this is going to be kinda hacky, but I don't want to rewrite all of the code above
+        #The strategy will be to define where our new vertices should be and then use the y
+        #coordinate of the vertices to split into sub-hammocks
+
+        #first check if the requested number of joists are going to fit well
+        hamheight = kwargs[:wpost] - kwargs[:wbeam] + lbeamy #total avilable space in y
+        joistcenterspacing = hamheight / (kwargs[:joistsperbeam] + 1)
+        if (joistcenterspacing - kwargs[:wjoist]/2) < (kwargs[:wpost] - kwargs[:wbeam])/2
+            error("requested number of posts will not fit on beam")
+        end
     end
-    Block(hatchedslices...)
+    joistcentery = collect((1:kwargs[:joistsperbeam]) * joistcenterspacing)
+    #joistcentery should be centered on zero
+    joistcentery = joistcentery .- mean(joistcentery)
+    #we should go ahead and build the joists here, we can return a SuperBlock with them and
+    #the hammocks
+    ljoist = lbeamx + kwargs[:wpost] - kwargs[:wbeam]
+    #get the number of segments per joist, I'm just going to neglect the keystone during this
+    #calculation, segment length will still be less than maxlseg
+    njoistseg = ceil(Int,ljoist/kwargs[:maxseglength])
+    if iseven(njoistseg)
+        njoistseg += 1
+    end
+    #build a joist centered on y = 0
+    (startx,stopx) = (ljoist/2)*[-1,1]
+    protojoist = Beam(njoistseg,startx,stopx,kwargs[:wjoist];kwargs...)
+    #make all the joists by translating protojoist
+    joists = map(joistcentery) do jcy
+        translate(protojoist,[0u"µm",jcy])
+    end
+    #each joist defines 4 new vertices at its 'corners'
+    #hammocks are slightly longer than joists because of overlap
+    lham = ljoist + 2*kwargs[:overlap]
+    #this will make a vector (for each joist) of vectors (for the top and bottom edge) of coordinates
+    newverts = map(joistcentery) do jcy
+        #y coordinates of our hammock vertices
+        vy = jcy .+ (kwargs[:wjoist]/2 - kwargs[:overlap])*[-1,1]
+        map(vy) do vyi
+            map([-1,1]*(lham/2)) do vxi
+                [vxi,vyi]
+            end
+        end
+    end
+    #newverts is in order of increasing y coordinate, and I believe scaledverts is in
+    #counterclockwise order
+    #each joist is bounded by two hammocks
+    (bottomedge,topedge) = map([<,>]) do f
+        filter(scaledverts) do v
+            f(v[2], 0u"µm")
+        end
+    end
+    
+    hams = map(1:length(newverts)) do j
+        jverts = newverts[j] #vertices corresponding to this joist
+        @assert length(jverts) == 2 "each joist should have two edges"
+        #the vertices corresponding to the bottom of this hammock come from the top
+        #(second index) of the previous joist or bottomedge if this is the first joist
+        bottomverts = j==1 ? bottomedge : reverse(newverts[j-1][2])
+        #the top of this hammock come from the bottom (first index) of this joist
+        topverts = newverts[j][1]
+        vcat(bottomverts,topverts)
+    end
+    #The last hammock is the top of the last beam and topedge
+    push!(hams,
+          vcat(newverts[end][2],topedge)
+          )
+    hamblocks = map(hams) do h
+        outline = Slice([polycontour(h)])
+        hatchedslices = map([pi/4,3pi/4]) do hd
+            (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
+                hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
+        end
+        Block(hatchedslices...)
+    end
+    #pick up here
+    keystones = merge((j.keystone for j in joists)...)
+    segs = vcat(([j.leftsegs,j.rightsegs] for j in joists)...)
+    mergedsegs = [merge(s...) for s in zip(segs...)]
+    #build a superblock. first segs, then keystones, then hammocks
+    allblocks = collect((mergedsegs...,keystones,hamblocks...))
+    SuperBlock(allblocks...)
 end
 
 #build a kernel with a nx x ny array of posts with pitch of px and py in each dimension
@@ -496,14 +584,14 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
         #beam(nsegs::Int,startx,stopx;kwargs...)
         #first build 'raw' beams around (0,0) and then translate them
         rawleftbeam = Beam(nseg,-kwargs[:wpost]/2 - lbeamx,
-                           -kwargs[:wpost]/2;kwargs...)
+                           -kwargs[:wpost]/2,kwargs[:wbeam];kwargs...)
         #topbeam will also require rotation (beam() makes horizontal beams)
-        rawtopbeam = Beam(nseg,kwargs[:wpost]/2,kwargs[:wpost]/2 + lbeamy;kwargs...)
+        rawtopbeam = Beam(nseg,kwargs[:wpost]/2,kwargs[:wpost]/2 + lbeamy,kwargs[:wbeam];kwargs...)
         leftbeam = translate(rawleftbeam,postcenter,preserveframe=true)
         topbeam = translate(rotate(rawtopbeam,pi/2,preserveframe=true),
                             postcenter,preserveframe=true)
         allbeams=[topbeam]
-        hammocks=Block{HatchedSlice}[]
+        hammocks=[]
         if left
             push!(allbeams,leftbeam)
             ht = hammock(lbeamx,lbeamy,toprow,false;kwargs...)
