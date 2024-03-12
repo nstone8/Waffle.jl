@@ -434,8 +434,8 @@ function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     firstverts = [[lbeamx/2,(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2],
                   [(lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2,lbeamy/2]]
     #get all the vertices by mirroring
-    cornerfactors=[[1,1],[1,-1],[-1,-1],[-1,1]]
-    invertverts=[false,true,false,true]
+    cornerfactors=[[1,1],[-1,1],[-1,-1],[1,-1]]
+    invertverts=[true,false,true,false]
     allverts = map(zip(cornerfactors,invertverts)) do (cf,iv)
         newverts = [cf.*v for v in firstverts]
         iv ? reverse(newverts) : newverts
@@ -443,10 +443,10 @@ function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     itoflat=[]
     if topflat
         #flatten out the top two corners
-        push!(itoflat,1,4)
+        push!(itoflat,1,2)
     end
     if bottomflat
-        push!(itoflat,2,3)
+        push!(itoflat,3,4)
     end
     for i in itoflat
         oldverts = allverts[i]
@@ -532,9 +532,9 @@ function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
         @assert length(jverts) == 2 "each joist should have two edges"
         #the vertices corresponding to the bottom of this hammock come from the top
         #(second index) of the previous joist or bottomedge if this is the first joist
-        bottomverts = j==1 ? bottomedge : reverse(newverts[j-1][2])
+        bottomverts = j==1 ? bottomedge : newverts[j-1][2]
         #the top of this hammock come from the bottom (first index) of this joist
-        topverts = newverts[j][1]
+        topverts = reverse(newverts[j][1])
         vcat(bottomverts,topverts)
     end
     #The last hammock is the top of the last beam and topedge
