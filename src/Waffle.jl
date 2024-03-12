@@ -429,7 +429,13 @@ end
 #draw a hammock, it will be centered on (0,0) if topflat and bottomflat are both false
 #those arguments will add corners so it mates flush with a bumper
 #if kwargs[:joistsperbeam] isn't zero, return multiple little hammocks
-function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
+#this now needs to be a struct so we can parallel-write the joists
+struct Hammock
+    keystones
+    segs
+    hammocks
+end
+function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     #the coordinates of the vertices which make up the top right cut off corner are
     firstverts = [[lbeamx/2,(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2],
                   [(lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2,lbeamy/2]]
@@ -549,13 +555,19 @@ function hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
         end
         Block(hatchedslices...)
     end
-    #pick up here
-    keystones = merge((j.keystone for j in joists)...)
+    keystones = [j.keystone for j in joists]
     segs = vcat(([j.leftsegs,j.rightsegs] for j in joists)...)
-    mergedsegs = [merge(s...) for s in zip(segs...)]
-    #build a superblock. first segs, then keystones, then hammocks
-    allblocks = collect((mergedsegs...,keystones,hamblocks...))
-    SuperBlock(allblocks...)
+    Hammock(keystones,segs,hamblocks)
+end
+
+#add translate method here, just forward all the arguments
+function Tessen.translate(h::Hammock,args...;kwargs...)
+    keystones = [translate(hk,args...;kwargs...) for hk in h.keystones]
+    segs = map(h.segs) do hseg
+        [translate(hs,args...;kwargs...) for hs in hseg]
+    end
+    hams = [translate(hham,args...;kwargs...) for hham in h.hammocks]
+    Hammock(keystones,segs,hams)
 end
 
 #build a kernel with a nx x ny array of posts with pitch of px and py in each dimension
@@ -594,14 +606,14 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
         hammocks=[]
         if left
             push!(allbeams,leftbeam)
-            ht = hammock(lbeamx,lbeamy,toprow,false;kwargs...)
+            ht = Hammock(lbeamx,lbeamy,toprow,false;kwargs...)
             push!(hammocks,translate(ht,postcenter + [-(kwargs[:wpost] + lbeamx)/2,
                                                       (kwargs[:wpost] + lbeamy)/2],
                                      preserveframe=true))
             #also need one underneath us if bottom
             if bottom
                 #i.e. if left and bottom, this implies we are on the bottom row
-                hb=hammock(lbeamx,lbeamy,false,true;kwargs...)
+                hb=Hammock(lbeamx,lbeamy,false,true;kwargs...)
                 push!(hammocks,translate(hb,postcenter + [-(kwargs[:wpost] + lbeamx)/2,
                                                           -(kwargs[:wpost] + lbeamy)/2],
                                          preserveframe=true))
@@ -629,7 +641,6 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
                    end...)
     keystones = collect(b.keystone for u in uvec for b in u.beams)
     posts = [u.post for u in uvec]
-    hammocks = vcat((u.hammocks for u in uvec)...)
     #now we arrange how we want things to be printed
     #all the posts should be written in parallel
     postblock=merge(posts...)
@@ -640,8 +651,24 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
         merge(thesesegs...)
     end
     keyblock = merge(keystones...)
-    #so now we print the posts first, then the segs, then the keystones, and then the hammocks
-    (posts=postblock,support=SuperBlock(segblocks...,keyblock), hammocks=SuperBlock(hammocks...))
+    #now do similar arrangements for our joist objects
+    joistkeys = vcat(map(uvec) do u
+                         vcat((h.keystones for h in u.hammocks)...)
+                     end...)
+    joistsegs = vcat(map(uvec) do u
+                         vcat((h.segs for h in u.hammocks)...)
+                     end...)
+    hams = vcat(map(uvec) do u
+                    vcat((h.hammocks for h in u.hammocks)...)
+                end...)
+    joistsegblocks = map(zip(joistsegs...)) do js
+        merge(js...)
+    end
+    joistkeyblock = merge(joistkeys...)
+    #so now we print the posts first, then the segs, then the keystones, then the joistsegs
+    #then the joist keystones and then the hammocks
+    (posts=postblock,support=SuperBlock(segblocks...,keyblock,joistsegblocks...,joistkeyblock),
+     hammocks=SuperBlock(hams...))
 end
 
 """
