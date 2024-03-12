@@ -479,7 +479,7 @@ function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
             (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
                 hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
         end
-        return Block(hatchedslices...)
+        return Hammock([],[],[Block(hatchedslices...)])
     else
         #this is going to be kinda hacky, but I don't want to rewrite all of the code above
         #The strategy will be to define where our new vertices should be and then use the y
@@ -509,7 +509,7 @@ function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     protojoist = Beam(njoistseg,startx,stopx,kwargs[:wjoist];kwargs...)
     #make all the joists by translating protojoist
     joists = map(joistcentery) do jcy
-        translate(protojoist,[0u"µm",jcy])
+        translate(protojoist,[0u"µm",jcy],preserveframe=true)
     end
     #each joist defines 4 new vertices at its 'corners'
     #hammocks are slightly longer than joists because of overlap
@@ -661,13 +661,17 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
     hams = vcat(map(uvec) do u
                     vcat((h.hammocks for h in u.hammocks)...)
                 end...)
-    joistsegblocks = map(zip(joistsegs...)) do js
+    joistsegblocks = isempty(joistsegs) ? [] : map(zip(joistsegs...)) do js
         merge(js...)
     end
-    joistkeyblock = merge(joistkeys...)
+    joistkeyblock = isempty(joistkeys) ? nothing : merge(joistkeys...)
     #so now we print the posts first, then the segs, then the keystones, then the joistsegs
     #then the joist keystones and then the hammocks
-    (posts=postblock,support=SuperBlock(segblocks...,keyblock,joistsegblocks...,joistkeyblock),
+    supblocks = [segblocks...,keyblock,joistsegblocks...,joistkeyblock]
+    filter!(supblocks) do sp
+        !isnothing(sp)
+    end
+    (posts=postblock,support=SuperBlock(supblocks...),
      hammocks=SuperBlock(hams...))
 end
 
@@ -804,7 +808,7 @@ function scaffold(scaffolddir,kwargs::Dict)
                 #hatch it
                 @info "compiling $(join([xv,yv])) kernel"
                 thissupport = hatch(thiskernel.support;dhatch=kwargs[:dhatch],bottomdir=pi/4)
-                thishammocks = hatch(thiskernel.hammocks;dhatch=kwargs[:dhatch],bottomdir=pi/4)
+                thishammocks = thiskernel.hammocks
                 tksupport = CompiledGeometry(joinpath("scripts",join([xv,yv,"_structure.gwl"])),
                                              thissupport;laserpower=kwargs[:laserpower],
                                              scanspeed=kwargs[:scanspeed])
