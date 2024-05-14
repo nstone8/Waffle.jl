@@ -19,9 +19,11 @@ will be written to `"config.jl"`.
 - hbottom: distance from the bottom of the post to the bottom of the beams
 - htop: distance from the bottom of the beams to the top of the posts
 - chamferbottom: angle at which the bottoms of the posts and beams should be chamfered
-- chamfertop: angle at which the topss of the posts and beams should be chamfered
+- chamfertop: angle at which the tops of the posts and beams should be chamfered
 - cutangle: angles at which blocks should be cut to avoid shadowing
 - overlap: amount that neighboring blocks should overlap to ensure they are connected
+- nhammock: number of hammock slices to write
+- dhammockslice: distance between hammock slices
 - dslice: slicing distance
 - wbumper: width of the bumpers
 - fillet: fillet radius on xz and yz crossections of the posts and bumpers
@@ -54,6 +56,8 @@ function createconfig(filename="config.jl")
         :cutangle => pi/6,
         :overlap => 10u"µm",
         :dslice => 1u"µm",
+        :nhammock => 3,
+        :dhammockslice => 300u"nm",
         :wbumper => 200u"µm",
         :fillet => 30u"µm",
         :wpost => 100u"µm",
@@ -433,9 +437,11 @@ end
 struct Hammock
     keystones
     segs
-    hammocks
+    hammocks::Block
 end
-function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
+#build an old-school single layer hammock with supporting structures.
+#none of this will be hatched
+function singlehammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     #the coordinates of the vertices which make up the top right cut off corner are
     firstverts = [[lbeamx/2,(lbeamy + kwargs[:wpost] - kwargs[:wbeam])/2],
                   [(lbeamx + kwargs[:wpost] - kwargs[:wbeam])/2,lbeamy/2]]
@@ -475,11 +481,9 @@ function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
     end
     if iszero(kwargs[:joistsperbeam])
         outline = Slice([polycontour(scaledverts)])
-        hatchedslices = map([pi/4,3pi/4]) do hd
-            (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
-                hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
-        end
-        return Hammock([],[],[Block(hatchedslices...)])
+        sliceblock = Block((kwargs[:hbottom]+kwargs[:hbeam]/2) => outline)
+
+        return Hammock([],[],sliceblock)
     else
         #this is going to be kinda hacky, but I don't want to rewrite all of the code above
         #The strategy will be to define where our new vertices should be and then use the y
@@ -549,24 +553,61 @@ function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
           )
     hamblocks = map(hams) do h
         outline = Slice([polycontour(h)])
-        hatchedslices = map([pi/4,3pi/4]) do hd
-            (kwargs[:hbottom]+kwargs[:hbeam]/2) =>
-                hatch(outline,dhatch=kwargs[:dhammockhatch],hatchdir=hd)
-        end
-        Block(hatchedslices...)
+        Block(kwargs[:hbottom]+kwargs[:hbeam]/2 => outline)
     end
+    hamblock = merge(hamblocks...)
     keystones = [j.keystone for j in joists]
     segs = vcat(([j.leftsegs,j.rightsegs] for j in joists)...)
-    Hammock(keystones,segs,hamblocks)
+    Hammock(keystones,segs,hamblock)
 end
 
+#here we build our 'multi-ply' hammocks and hatch the hammocks themselves
+function Hammock(lbeamx,lbeamy,topflat,bottomflat;kwargs...)
+    @assert isodd(kwargs[:nhammock]) "hammocks must have an odd number of layers"
+    #get the offsets above the center hammock
+    onesideoffsets = map(1:((kwargs[:nhammock]-1)/2)) do i
+        i * kwargs[:dhammockslice]
+    end
+    #get all the offsets
+    offsets = vcat(-1*reverse(onesideoffsets),
+                   zero(kwargs[:dhammockslice]),
+                   onesideoffsets)
+    #build an ordered list of offset => Hammock pairs
+    ohpairs = map(offsets) do o
+        #calculate new values for lbeamx, lbeamy, wpost, wbeam, and wjoist
+        #to account for chamfers
+        c = o / tan(kwargs[:chamfertop])
+        local_lbeamx = lbeamx + 2*c
+        local_lbeamy = lbeamy + 2*c
+        local_kwargs = copy(kwargs)
+        local_kwargs[:wpost] -= 2*c
+        local_kwargs[:wbeam] -= 2*c
+        local_kwargs[:wjoist] -= 2*c
+        o => singlehammock(local_lbeamx,local_lbeamy,
+                           topflat,bottomflat;local_kwargs...)
+    end
+    centerham = filter(ohpairs) do (o,h)
+        iszero(o)
+    end
+    @assert length(centerham) == 1
+    centerham = centerham[1].second # we want the second entry in the only pair present
+    #translate all of the hammocks in ohpairs
+    transham = map(ohpairs) do (o,h)
+        translate(h.hammocks,[zero(o),zero(o),o],preserveframe=true)
+    end
+    hatchedham = hatch(merge(transham...),dhatch = kwargs[:dhammockhatch],
+                       bottomdir=pi/4,diroffset=pi)
+    #make a new Hammock with the support structure from the centerham and all
+    #our layers
+    Hammock(centerham.keystones,centerham.segs,hatchedham)
+end
 #add translate method here, just forward all the arguments
 function Tessen.translate(h::Hammock,args...;kwargs...)
     keystones = [translate(hk,args...;kwargs...) for hk in h.keystones]
     segs = map(h.segs) do hseg
         [translate(hs,args...;kwargs...) for hs in hseg]
     end
-    hams = [translate(hham,args...;kwargs...) for hham in h.hammocks]
+    hams = translate(h.hammocks,args...;kwargs...)
     Hammock(keystones,segs,hams)
 end
 
