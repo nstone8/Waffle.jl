@@ -293,7 +293,8 @@ function bumper(;kwargs...)
 end
 
 #get one slice of a post
-function postslice(scale,pctfillet;kwargs...)
+#`edge` kwarg determines if it is part of our blunt edge or noe
+function postslice(scale,pctfillet;edge=false,kwargs...)
     #define some vertices that we can use to get the rest via rotation
     firstverts = scale .* [[-kwargs[:wbeam]/2,kwargs[:wpost]/2],
                            [kwargs[:wbeam]/2,kwargs[:wpost]/2]]
@@ -308,10 +309,15 @@ function postslice(scale,pctfillet;kwargs...)
     phi = atan(/(reverse(vlongside)...)) |> abs
     theta = pi - phi
     rmax = scale*kwargs[:wbeam] * tan(theta/2)/2
+    if edge
+        deleteat!(verts,1:2)
+        #we could get away with a little more here but I don't care
+        rmax = kwargs[:wbeam]/2
+    end
     Slice([polycontour(verts,rmax*pctfillet)])
 end
 
-function post(;kwargs...)
+function post(;edge=false,kwargs...)
     #get all the z slices that we will need
     unassignedz = collect(range(0u"µm",kwargs[:hbottom]+kwargs[:htop],step=kwargs[:dslice]))
     bottomz = filter(unassignedz) do uz
@@ -336,7 +342,7 @@ function post(;kwargs...)
         #in terms of percent of wpost
         scale = (kwargs[:wpost]-ucut)/kwargs[:wpost]
         pctround = (kwargs[:hbottom] - z)/kwargs[:hbottom]
-        z => postslice(scale,pctround;kwargs...)
+        z => postslice(scale,pctround;edge,kwargs...)
     end
     #midslices has no rounding so the beams will snap on easily
     midslices = map(midz) do z
@@ -344,7 +350,7 @@ function post(;kwargs...)
         ucut = (z-kwargs[:hbottom])*tan(kwargs[:chamfertop])
         #in terms of percent of wpost
         scale = (kwargs[:wpost]-ucut)/kwargs[:wpost]
-        z => postslice(scale,0;kwargs...)
+        z => postslice(scale,0;edge,kwargs...)
     end
     #topslices round smoothly up to 1
     topslices = map(topz) do z
@@ -353,7 +359,7 @@ function post(;kwargs...)
         #in terms of percent of wpost
         scale = (kwargs[:wpost]-ucut)/kwargs[:wpost]
         pctround = (z - kwargs[:hbottom] - kwargs[:hbeam]) / (kwargs[:htop] - kwargs[:hbeam])
-        z => postslice(scale,pctround;kwargs...)
+        z => postslice(scale,pctround;edge,kwargs...)
     end
     Block(bottomslices...,midslices...,topslices...)
 end
@@ -613,8 +619,9 @@ end
 
 #build a kernel with a nx x ny array of posts with pitch of px and py in each dimension
 #lbeams and bbeams controls wheter beams should be drawn connecting to geometry to the left
-#or below the current kernel
-function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
+#or below the current kernel. `edge` controls whether the posts should be truncated on the left.
+#We will use this to make `leftedgepostblock` and `rightedgepostblock` down in `scaffold`
+function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,edge=false,kwargs...)
     #calculate beam lengths
     lbeamx = px - kwargs[:wpost]
     lbeamy = py - kwargs[:wpost]
@@ -633,7 +640,11 @@ function kernel(nx,ny,px,py,nseg;lbeams,bbeams,toprow,kwargs...)
     end
     #little helper function
     function onepost(postcenter,left,bottom,toprow)
-        thispost = translate(post(;kwargs...),postcenter,preserveframe=true)
+        #we're doing this rotate so the blunted side will point left if `edge && !left`
+        #left=true when we want beams on the left, so this is only false on the leftmost
+        #column (which is admittedly confusing)
+        flatedge = edge && !left
+        thispost = translate(rotate(post(;edge=flatedge,kwargs...),pi/2),postcenter,preserveframe=true)
         #beam(nsegs::Int,startx,stopx;kwargs...)
         #first build 'raw' beams around (0,0) and then translate them
         rawleftbeam = Beam(nseg,-kwargs[:wpost]/2 - lbeamx,
@@ -832,12 +843,23 @@ function scaffold(scaffolddir,kwargs::Dict)
         )
         #build all the combinations
         kvariants = Dict()
-        #all posts are the same
+        #make the 3 post arrangements we need
         postblock=kernel(knx,kny,px,py,nseg;
                          xvariants[:notleftedge]...,yvariants[:middle]...,kwargs...).posts
+        leftedgepostblock = kernel(knx,kny,px,py,nseg;lbeams=false,bbeams=false,toprow=false,
+                                   edge=true,kwargs...).posts
+        rightedgepostblock = translate(rotate(leftedgepostblock,pi),[kwargs[:wpost] + kwargs[:overlap],zero(kwargs[:wpost])],preserveframe=true)
         @info "compiling posts"
         hatchedposts=hatch(postblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
+        lefthatchedposts=hatch(leftedgepostblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
+        righthatchedposts=hatch(rightedgepostblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
         posts=CompiledGeometry(joinpath("scripts","posts.gwl"),SuperBlock(hatchedposts);
+                               laserpower=kwargs[:laserpower],
+                               scanspeed=kwargs[:scanspeed])
+        leftposts=CompiledGeometry(joinpath("scripts","leftposts.gwl"),SuperBlock(lefthatchedposts);
+                               laserpower=kwargs[:laserpower],
+                               scanspeed=kwargs[:scanspeed])
+        rightposts=CompiledGeometry(joinpath("scripts","rightposts.gwl"),SuperBlock(righthatchedposts);
                                laserpower=kwargs[:laserpower],
                                scanspeed=kwargs[:scanspeed])
         
@@ -897,7 +919,13 @@ function scaffold(scaffolddir,kwargs::Dict)
             end
             tk=kvariants[xv][yv]
             #need to translate both of them to kcenter
-            tposts = translate(posts,kcenter)
+            tposts = if i == 1
+                translate(leftposts,kcenter)
+            elseif i == numkernelx
+                translate(rightposts,kcenter)
+            else
+                translate(posts,kcenter)
+            end
             tsupport=translate(tk[:support],kcenter)
             thammocks=translate(tk[:hammocks],kcenter)
             #write the posts, then structure then hammocks
