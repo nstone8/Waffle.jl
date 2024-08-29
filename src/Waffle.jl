@@ -767,14 +767,16 @@ function scaffold(scaffolddir,kwargs::Dict)
                   #distance from the top of the top row of posts to the bottom bumper
                   (kwargs[:wscaf] - 2*kwargs[:wbumper] - kwargs[:lbeammax])/
                       pmax)
+        #amount of distance trimmed off when we flattened the edge posts (per side)
+        ltrim = (kwargs[:wpost] - kwargs[:wbeam])/2
         
         nx = #start with one post
             1 + 
             ceil(Int,
                  #distance from the end of the leftmost post to the end of the scaffold
                  #we have to subtract off wbumper to account for the rounded ends of the
-                 #bumper
-                 (kwargs[:lscaf] - kwargs[:wpost] - kwargs[:wbumper])/
+                 #bumper. Add on ltrim to account for the last post being short
+                 (kwargs[:lscaf] - kwargs[:wpost] - kwargs[:wbumper] + 2*ltrim)/
                      pmax)
 
         #we don't want nx or ny to be prime
@@ -785,7 +787,8 @@ function scaffold(scaffolddir,kwargs::Dict)
         #get the actual beam lengths
         nbeamx = nx - 1
         nbeamy = ny + 1
-        lbeamx = (kwargs[:lscaf] - nx*kwargs[:wpost] - kwargs[:wbumper])/nbeamx
+        #use same calculation for total distance as for nx
+        lbeamx = (kwargs[:lscaf] - nx*kwargs[:wpost] - kwargs[:wbumper] + 2*ltrim)/nbeamx
         lbeamy = (kwargs[:wscaf]-2*kwargs[:wbumper] - ny*kwargs[:wpost])/nbeamy
         @assert lbeamx <= kwargs[:lbeammax]
         @assert lbeamy <= kwargs[:lbeammax]
@@ -848,7 +851,10 @@ function scaffold(scaffolddir,kwargs::Dict)
                          xvariants[:notleftedge]...,yvariants[:middle]...,kwargs...).posts
         leftedgepostblock = kernel(knx,kny,px,py,nseg;lbeams=false,bbeams=false,toprow=false,
                                    edge=true,kwargs...).posts
-        rightedgepostblock = translate(rotate(leftedgepostblock,pi),[kwargs[:wpost] + kwargs[:overlap],zero(kwargs[:wpost])],preserveframe=true)
+        #need to translate after the rotation because the origin of the block isn't at the center
+        rightedgepostblock = translate(rotate(leftedgepostblock,pi),
+                                       [(knx-1)*px - kwargs[:wpost] + kwargs[:overlap],zero(kwargs[:wpost])],
+                                       preserveframe=true)
         @info "compiling posts"
         hatchedposts=hatch(postblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
         lefthatchedposts=hatch(leftedgepostblock,dhatch=kwargs[:dhatch],bottomdir=pi/4)
@@ -886,8 +892,9 @@ function scaffold(scaffolddir,kwargs::Dict)
         #place all the kernels and hammocks
         #the kernels were built so that they are centered on a 'maximal' kernel
         #the coordinates of the top left corner of the top left post in the top left kernel relative
-        #to the top left corner of the scaffold is...
-        cornertofirstpost = [kwargs[:wbumper]/2,-kwargs[:wbumper] - lbeamy]
+        #to the top left corner of the scaffold is... (we need to subtract off ltrim to get the distance
+        #to where the post would be if it hadn't been trimmed
+        cornertofirstpost = [kwargs[:wbumper]/2 - ltrim,-kwargs[:wbumper] - lbeamy]
         #the distance between the top left corner of the first post and the origin of its kernel is
         firstposttokc = [(knx*px)/2-lbeamx,(-kny*py-lbeamy)/2 + lbeamy]
         #therefore, the top left corner of the scaffold to the origin of the first kernel is
